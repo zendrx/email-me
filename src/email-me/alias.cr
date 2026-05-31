@@ -1,5 +1,6 @@
 require "json"
 require "./db"
+require "./team"
 
 class Alias
   property id : Int32
@@ -8,11 +9,12 @@ class Alias
   property domain : String
   property forward_to : String
   property active : Bool
+  property created_at : Time
 
   DEFAULT_DOMAIN = ENV["APP_DOMAIN"]? || "yourdomain.com"
 
   def initialize(@id : Int32, @user_id : Int32, @local_part : String, 
-                 @domain : String, @forward_to : String, @active : Bool)
+                 @domain : String, @forward_to : String, @active : Bool, @created_at : Time)
   end
 
   def full_email : String
@@ -39,8 +41,15 @@ class Alias
     end
     
     # Check if user can use this domain
-    if domain != DEFAULT_DOMAIN && !is_paid_user
-      return {false, "Custom domains require a paid subscription"}
+    if domain != DEFAULT_DOMAIN
+      unless is_paid_user
+        return {false, "Custom domains require a paid subscription"}
+      end
+      
+      # Check team permission for custom domain
+      unless Team.can_create_alias?(user_id, domain)
+        return {false, "You don't have permission to create aliases on this domain"}
+      end
     end
     
     # Check if available
@@ -61,25 +70,63 @@ class Alias
     {false, "Database error: #{ex.message}"}
   end
 
-  def self.delete(alias_id : Int32, user_id : Int32) : Bool
-    result = DB::DATABASE.exec(
-      "UPDATE aliases SET active = false WHERE id = $1 AND user_id = $2",
-      alias_id, user_id
-    )
+  def self.delete(alias_id : Int32, user_id : Int32, is_admin : Bool = false) : Bool
+    # Get alias info first
+    alias_info = find_by_id(alias_id)
+    return false if alias_info.nil?
+    
+    # Check if user is domain owner or admin for this domain
+    if alias_info.domain != DEFAULT_DOMAIN
+      domain_owner = DB::DATABASE.query_one?(
+        "SELECT owner_id FROM domains WHERE domain = $1",
+        alias_info.domain, as: Int32
+      )
+      
+      # Domain owner or admin can delete any alias
+      if domain_owner == user_id || Team.can_manage_team?(get_domain_id(alias_info.domain), user_id)
+        is_admin = true
+      end
+    end
+    
+    # Regular user can only delete their own aliases unless admin
+    if is_admin
+      result = DB::DATABASE.exec(
+        "UPDATE aliases SET active = false WHERE id = $1",
+        alias_id
+      )
+    else
+      result = DB::DATABASE.exec(
+        "UPDATE aliases SET active = false WHERE id = $1 AND user_id = $2",
+        alias_id, user_id
+      )
+    end
+    
     result.rows_affected > 0
   end
 
   def self.find_by_user(user_id : Int32, active_only : Bool = true) : Array(Alias)
-    query = "SELECT id, user_id, local_part, domain, forward_to, active 
+    query = "SELECT id, user_id, local_part, domain, forward_to, active, created_at 
              FROM aliases WHERE user_id = $1"
     query += " AND active = true" if active_only
     
-    results = DB::DATABASE.query_all(query, user_id, as: {Int32, Int32, String, String, String, Bool})
+    results = DB::DATABASE.query_all(query, user_id, as: {Int32, Int32, String, String, String, Bool, Time})
     
     results.map do |row|
-      id, uid, local, domain, forward, active = row
-      Alias.new(id, uid, local, domain, forward, active)
+      id, uid, local, domain, forward, active, created = row
+      Alias.new(id, uid, local, domain, forward, active, created)
     end
+  end
+
+  def self.find_by_id(alias_id : Int32) : Alias?
+    result = DB::DATABASE.query_one?(
+      "SELECT id, user_id, local_part, domain, forward_to, active, created_at 
+       FROM aliases WHERE id = $1",
+      alias_id, as: {Int32, Int32, String, String, String, Bool, Time}
+    )
+    
+    return nil if result.nil?
+    id, uid, local, domain, forward, active, created = result
+    Alias.new(id, uid, local, domain, forward, active, created)
   end
 
   def self.find_by_email(full_email : String) : Alias?
@@ -88,29 +135,47 @@ class Alias
     local, domain = parts[0], parts[1]
     
     result = DB::DATABASE.query_one?(
-      "SELECT id, user_id, local_part, domain, forward_to, active 
+      "SELECT id, user_id, local_part, domain, forward_to, active, created_at 
        FROM aliases WHERE local_part = $1 AND domain = $2 AND active = true",
-      local, domain, as: {Int32, Int32, String, String, String, Bool}
+      local, domain, as: {Int32, Int32, String, String, String, Bool, Time}
     )
     
     return nil if result.nil?
-    id, uid, local, domain, forward, active = result
-    Alias.new(id, uid, local, domain, forward, active)
+    id, uid, local, domain, forward, active, created = result
+    Alias.new(id, uid, local, domain, forward, active, created)
   end
 
   def self.get_domains_for_user(user_id : Int32) : Array(String)
+    # Own aliases domains
     results = DB::DATABASE.query_all(
       "SELECT DISTINCT domain FROM aliases WHERE user_id = $1 AND active = true",
       user_id, as: String
     )
     
-    # Always include default domain if user has any aliases on it
-    domains = results.to_a
-    if DB::DATABASE.query_one?("SELECT 1 FROM aliases WHERE user_id = $1 AND domain = $2 LIMIT 1", user_id, DEFAULT_DOMAIN, as: Int32)
-      domains << DEFAULT_DOMAIN unless domains.includes?(DEFAULT_DOMAIN)
-    end
+    # Team domains
+    team_domains = DB::DATABASE.query_all(
+      "SELECT d.domain 
+       FROM domains d
+       JOIN team_members tm ON tm.domain_id = d.id
+       WHERE tm.user_id = $1",
+      user_id, as: String
+    )
+    
+    domains = (results.to_a + team_domains.to_a).uniq
+    
+    # Always include default domain
+    domains << DEFAULT_DOMAIN unless domains.includes?(DEFAULT_DOMAIN)
     
     domains
+  end
+
+  private def self.get_domain_id(domain : String) : Int32
+    DB::DATABASE.query_one(
+      "SELECT id FROM domains WHERE domain = $1",
+      domain, as: Int32
+    )
+  rescue
+    0
   end
 
   def to_json : String
@@ -120,7 +185,8 @@ class Alias
       domain: @domain,
       forward_to: @forward_to,
       full_email: full_email,
-      active: @active
+      active: @active,
+      created_at: @created_at.to_s
     }.to_json
   end
 end
