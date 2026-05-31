@@ -2,38 +2,37 @@ require "kemal"
 require "ecr"
 require "json"
 require "uuid"
-require "stripe"
-require "./auth"
-require "./alias"
-require "./team"
-
+require "db"
+require "sqlite3"
+require "bcrypt"
+require "jwt"
+require "./email-me/*"
 # Database setup
 DB::DATABASE = SQLite3::DB.open(ENV["DATABASE_URL"]? || "email_me.db")
 DB.setup
 
-# Stripe setup
-Stripe.api_key = ENV["STRIPE_SECRET_KEY"] || raise "STRIPE_SECRET_KEY not set"
-STRIPE_PUBLIC_KEY = ENV["STRIPE_PUBLIC_KEY"] || raise "STRIPE_PUBLIC_KEY not set"
-PRO_PRICE_ID = ENV["STRIPE_PRO_PRICE_ID"] || "price_pro"
-UNLIMITED_PRICE_ID = ENV["STRIPE_UNLIMITED_PRICE_ID"] || "price_unlimited"
-
-# Session management
-SESSION_STORE = {} of String => Int32
-
 # Helper to get current user
-def current_user(context)
-  token = context.request.cookies["auth_token"]?.try(&.value)
+def current_user(env)
+  token = env.request.cookies["auth_token"]?.try(&.value)
   return nil if token.nil?
   Auth.authenticate(token)
 end
 
-def require_login(context)
-  user = current_user(context)
+def require_login(env)
+  user = current_user(env)
   if user.nil?
-    context.redirect "/signup"
+    env.redirect "/signup"
     return nil
   end
   user
+end
+
+# Helper to get user object with plan
+def get_user_with_plan(user_id : Int32)
+  result = DB::DATABASE.query_one?("SELECT id, email, username, plan, forward_email FROM users WHERE id = $1", user_id, as: {Int32, String, String, String?, String?})
+  return nil if result.nil?
+  id, email, username, plan, forward_email = result
+  {id: id, email: email, username: username, plan: plan || "Free", forward_email: forward_email}
 end
 
 # Routes
@@ -150,16 +149,15 @@ get "/dashboard" do |env|
   user = require_login(env)
   return unless user
   
-  # Get user data
-  user_obj = User.find_by_id(user.id).not_nil!
+  user_data = get_user_with_plan(user.id).not_nil!
   aliases = Alias.find_by_user(user.id)
-  plan = user_obj.plan || "Free"
-  forward_to = user_obj.forward_email || "Not set"
   
   response = env.response
   response.content_type = "text/html"
-  username = user.username
-  email = user.email
+  username = user_data[:username]
+  email = user_data[:email]
+  plan = user_data[:plan]
+  forward_to = user_data[:forward_email] || "Not set"
   alias_count = aliases.size
   recent_aliases = aliases.first(5)
   ECR.render("views/dashboard.ecr")
@@ -170,8 +168,9 @@ get "/alias" do |env|
   user = require_login(env)
   return unless user
   
+  user_data = get_user_with_plan(user.id).not_nil!
   aliases = Alias.find_by_user(user.id)
-  plan = User.find_by_id(user.id).not_nil!.plan || "Free"
+  plan = user_data[:plan]
   domain = Alias::DEFAULT_DOMAIN
   
   response = env.response
@@ -191,30 +190,30 @@ post "/alias/create" do |env|
   forward_to = params["forward_to"]?.to_s
   domain = Alias::DEFAULT_DOMAIN
   
-  user_obj = User.find_by_id(user.id).not_nil!
-  is_paid = user_obj.plan != "Free"
+  user_data = get_user_with_plan(user.id).not_nil!
+  is_paid = user_data[:plan] != "Free"
   
   success, result = Alias.create(user.id, local_part, domain, forward_to, is_paid)
   
   if success
-    # Call Cloudflare to create forwarding rule
-    new_alias = Alias.find_by_id(result.as(Int32)).not_nil!
-    cf_success, cf_result = Cloudflare.sync_alias(new_alias, "create")
-    unless cf_success
-      # Rollback alias creation if Cloudflare fails
-      Alias.delete(result.as(Int32), user.id, true)
-      error_message = "Failed to create forwarding rule: #{cf_result}"
-      aliases = Alias.find_by_user(user.id)
-      plan = user_obj.plan || "Free"
-      domain = Alias::DEFAULT_DOMAIN
-      success_message = ""
-      return ECR.render("views/alias.ecr")
+    new_alias = Alias.find_by_id(result.as(Int32))
+    if new_alias
+      cf_success, cf_result = Cloudflare.sync_alias(new_alias, "create")
+      unless cf_success
+        Alias.delete(result.as(Int32), user.id, true)
+        error_message = "Failed to create forwarding rule: #{cf_result}"
+        aliases = Alias.find_by_user(user.id)
+        plan = user_data[:plan]
+        domain = Alias::DEFAULT_DOMAIN
+        success_message = ""
+        return ECR.render("views/alias.ecr")
+      end
     end
     env.redirect "/alias"
   else
     error_message = result.as(String)
     aliases = Alias.find_by_user(user.id)
-    plan = user_obj.plan || "Free"
+    plan = user_data[:plan]
     domain = Alias::DEFAULT_DOMAIN
     success_message = ""
     response = env.response
@@ -233,9 +232,7 @@ post "/alias/delete" do |env|
   
   alias_obj = Alias.find_by_id(alias_id)
   if alias_obj && alias_obj.user_id == user.id
-    # Delete from Cloudflare first
     Cloudflare.sync_alias(alias_obj, "delete")
-    # Delete from database
     Alias.delete(alias_id, user.id, false)
   end
   
@@ -247,11 +244,10 @@ get "/team" do |env|
   user = require_login(env)
   return unless user
   
-  user_obj = User.find_by_id(user.id).not_nil!
-  plan = user_obj.plan || "Free"
+  user_data = get_user_with_plan(user.id).not_nil!
+  plan = user_data[:plan]
   domains = Team.get_user_domains(user.id)
   
-  # Get team members for each domain
   team_members = {} of Int32 => Array(TeamMember)
   domains.each do |domain|
     team_members[domain.id] = Team.get_team_members(domain.id, user.id)
@@ -278,8 +274,8 @@ post "/team/domain/add" do |env|
     env.redirect "/team"
   else
     error_message = result.as(String)
-    user_obj = User.find_by_id(user.id).not_nil!
-    plan = user_obj.plan || "Free"
+    user_data = get_user_with_plan(user.id).not_nil!
+    plan = user_data[:plan]
     domains = Team.get_user_domains(user.id)
     team_members = {} of Int32 => Array(TeamMember)
     domains.each do |d|
@@ -308,8 +304,8 @@ post "/team/invite" do |env|
     env.redirect "/team"
   else
     error_message = message
-    user_obj = User.find_by_id(user.id).not_nil!
-    plan = user_obj.plan || "Free"
+    user_data = get_user_with_plan(user.id).not_nil!
+    plan = user_data[:plan]
     domains = Team.get_user_domains(user.id)
     team_members = {} of Int32 => Array(TeamMember)
     domains.each do |d|
@@ -335,149 +331,145 @@ post "/team/remove" do |env|
   env.redirect "/team"
 end
 
-# Pro checkout
+# Pro checkout page
 get "/pro" do |env|
   user = require_login(env)
   return unless user
   
   response = env.response
   response.content_type = "text/html"
-  stripe_public_key = STRIPE_PUBLIC_KEY
-  price_id = PRO_PRICE_ID
-  ECR.render("views/checkout.ecr")
+  public_key = Paystack::PUBLIC_KEY
+  amount = Paystack::PRO_AMOUNT
+  plan_name = "Pro"
+  ECR.render("views/checkout-paystack.ecr")
 end
 
-# Unlimited checkout
+# Unlimited checkout page
 get "/unlimited" do |env|
   user = require_login(env)
   return unless user
   
   response = env.response
   response.content_type = "text/html"
-  stripe_public_key = STRIPE_PUBLIC_KEY
-  price_id = UNLIMITED_PRICE_ID
-  ECR.render("views/checkout.ecr")
+  public_key = Paystack::PUBLIC_KEY
+  amount = Paystack::UNLIMITED_AMOUNT
+  plan_name = "Unlimited"
+  ECR.render("views/checkout-paystack.ecr")
 end
 
-# Create Stripe checkout session
-post "/create-checkout-session" do |env|
+# Initialize Paystack payment
+post "/paystack/initialize" do |env|
   user = require_login(env)
   return unless user
   
   params = env.params.body
-  price_id = params["price_id"]?.to_s
+  plan = params["plan"]?.to_s
+  email = user.email
   
-  session = Stripe::Checkout::Session.create({
-    success_url: "#{ENV["APP_URL"]}/payment-success?session_id={CHECKOUT_SESSION_ID}",
-    cancel_url: "#{ENV["APP_URL"]}/pricing",
-    mode: "subscription",
-    customer_email: user.email,
-    line_items: [{
-      quantity: 1,
-      price: price_id
-    }]
-  })
+  amount = case plan
+           when "Pro" then Paystack::PRO_AMOUNT
+           when "Unlimited" then Paystack::UNLIMITED_AMOUNT
+           else 0
+           end
+  
+  callback_url = "#{ENV["APP_URL"]}/paystack/callback"
+  
+  result = Paystack.initialize_transaction(email, amount, plan, user.id, callback_url)
   
   env.response.headers["Content-Type"] = "application/json"
-  {"id" => session.id}.to_json
-end
-
-# Payment success
-get "/payment-success" do |env|
-  user = require_login(env)
-  return unless user
-  
-  session_id = env.params.query["session_id"]?.to_s
-  
-  begin
-    session = Stripe::Checkout::Session.retrieve(session_id)
-    
-    if session.payment_status == "paid"
-      # Determine plan from price ID
-      price_id = session.line_items.data.first.price.id
-      plan = case price_id
-             when PRO_PRICE_ID then "Pro"
-             when UNLIMITED_PRICE_ID then "Unlimited"
-             else "Free"
-             end
-      
-      # Update user's plan in database
-      DB::DATABASE.exec(
-        "UPDATE users SET plan = $1, stripe_customer_id = $2 WHERE id = $3",
-        plan, session.customer, user.id
-      )
-      
-      response = env.response
-      response.content_type = "text/html"
-      success_message = "Payment successful! Your plan has been upgraded to #{plan}."
-      ECR.render("views/payment-success.ecr")
-    else
-      env.redirect "/pricing"
-    end
-  rescue ex
-    env.redirect "/pricing"
+  if result.status && result.data
+    {"status" => true, "authorization_url" => result.data.not_nil!.authorization_url, "reference" => result.data.not_nil!.reference}.to_json
+  else
+    {"status" => false, "message" => result.message}.to_json
   end
 end
 
-# Webhook for Stripe events
-post "/stripe-webhook" do |env|
-  payload = env.request.body.not_nil!.gets_to_end
-  sig_header = env.request.headers["Stripe-Signature"]?.to_s
-  webhook_secret = ENV["STRIPE_WEBHOOK_SECRET"] || ""
+# Paystack callback
+get "/paystack/callback" do |env|
+  user = require_login(env)
+  return unless user
   
-  begin
-    event = Stripe::Webhook.construct_event(payload, sig_header, webhook_secret)
+  reference = env.params.query["reference"]?.to_s
+  
+  if reference.empty?
+    env.redirect "/pricing?error=missing_reference"
+    return
+  end
+  
+  result = Paystack.verify_transaction(reference)
+  
+  if result.status && result.data && result.data.not_nil!.status == "success"
+    metadata = result.data.not_nil!.metadata
+    plan = metadata ? metadata.plan : "Pro"
     
-    case event.type
-    when "customer.subscription.deleted"
+    DB::DATABASE.exec(
+      "UPDATE users SET plan = $1 WHERE id = $2",
+      plan, user.id
+    )
+    
+    response = env.response
+    response.content_type = "text/html"
+    success_message = "Payment successful! Your plan has been upgraded to #{plan}."
+    ECR.render("views/payment-success.ecr")
+  else
+    env.redirect "/pricing?error=payment_failed"
+  end
+end
+
+# Paystack webhook
+post "/paystack/webhook" do |env|
+  payload = env.request.body.not_nil!.gets_to_end
+  signature = env.request.headers["X-Paystack-Signature"]?.to_s
+  
+  event = Paystack.parse_webhook(payload, signature)
+  
+  if event
+    case event.event
+    when "charge.success"
+      reference = event.data.reference
+      amount = event.data.amount
+      metadata = event.data.metadata
+      
+      if metadata
+        user_id = metadata.user_id
+        plan = metadata.plan
+        
+        DB::DATABASE.exec(
+          "UPDATE users SET plan = $1 WHERE id = $2",
+          plan, user_id
+        )
+      end
+    when "subscription.disable"
       # Handle subscription cancellation
-      customer_id = event.data.object.customer
+      reference = event.data.reference
       DB::DATABASE.exec(
-        "UPDATE users SET plan = 'Free' WHERE stripe_customer_id = $1",
-        customer_id
-      )
-    when "invoice.payment_failed"
-      # Handle failed payment
-      customer_id = event.data.object.customer
-      DB::DATABASE.exec(
-        "UPDATE users SET plan = 'Free' WHERE stripe_customer_id = $1",
-        customer_id
+        "UPDATE users SET plan = 'Free' WHERE stripe_customer_id IS NULL AND id IN (SELECT user_id FROM users WHERE email = $1)",
+        event.data.customer.email
       )
     end
     
     env.response.status_code = 200
-    env.response.print("Webhook received")
-  rescue ex
-    env.response.status_code = 400
-    env.response.print("Webhook error")
+    env.response.print("OK")
+  else
+    env.response.status_code = 401
+    env.response.print("Invalid signature")
   end
 end
 
-# Cancel subscription
+# Cancel subscription (redirect to team page for now)
 post "/cancel-subscription" do |env|
   user = require_login(env)
   return unless user
   
-  user_obj = User.find_by_id(user.id).not_nil!
-  customer_id = user_obj.stripe_customer_id
-  
-  if customer_id && !customer_id.empty?
-    # Get active subscriptions
-    subscriptions = Stripe::Subscription.list({customer: customer_id, status: "active"})
-    subscriptions.data.each do |sub|
-      Stripe::Subscription.cancel(sub.id)
-    end
-    
-    DB::DATABASE.exec(
-      "UPDATE users SET plan = 'Free' WHERE id = $1",
-      user.id
-    )
-  end
+  DB::DATABASE.exec(
+    "UPDATE users SET plan = 'Free' WHERE id = $1",
+    user.id
+  )
   
   env.redirect "/dashboard"
 end
 
 # Start server
 port = (ENV["PORT"]? || "3000").to_i
-puts "Server running on http://localhost:#{port}"
+puts "Email Me server running on http://localhost:#{port}"
 Kemal.run(port)
