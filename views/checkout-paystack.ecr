@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Checkout - Email Me</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://js.paystack.co/v1/inline.js"></script>
+  <style>
+    .gradient-bg {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <nav class="bg-white shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex justify-between items-center h-16">
+        <div class="flex items-center">
+          <a href="/" class="text-xl font-bold gradient-bg bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-blue-600">
+            Email Me
+          </a>
+        </div>
+        <div class="flex space-x-4">
+          <a href="/dashboard" class="text-gray-700 hover:text-gray-900">Dashboard</a>
+          <a href="/pricing" class="text-gray-700 hover:text-gray-900">Pricing</a>
+          <a href="/logout" class="px-4 py-2 rounded-lg border border-red-600 text-red-600 hover:bg-red-50 transition">
+            Logout
+          </a>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <div class="max-w-4xl mx-auto px-4 py-20">
+    <div class="bg-white rounded-lg shadow-lg p-8 text-center">
+      <div class="mb-6">
+        <div class="w-20 h-20 gradient-bg rounded-full flex items-center justify-center mx-auto mb-4">
+          <span class="text-3xl text-white">₦</span>
+        </div>
+        <h1 class="text-2xl font-bold text-gray-900 mb-2">Complete Your Purchase</h1>
+        <p class="text-gray-600">You're about to upgrade to <strong><%= plan_name %></strong> plan</p>
+        <p class="text-3xl font-bold text-gray-900 mt-4">
+          ₦<%= amount == 400000 ? "4,000" : "7,500" %>/<span class="text-sm font-normal text-gray-500">month</span>
+        </p>
+      </div>
+      
+      <div class="border-t border-b border-gray-200 py-4 my-6">
+        <div class="flex justify-between text-sm">
+          <span class="text-gray-600">Plan</span>
+          <span class="font-medium"><%= plan_name %></span>
+        </div>
+        <div class="flex justify-between text-sm mt-2">
+          <span class="text-gray-600">Billing period</span>
+          <span class="font-medium">Monthly</span>
+        </div>
+      </div>
+      
+      <button id="pay-now" class="w-full px-6 py-3 rounded-lg bg-gradient-to-r from-purple-600 to-blue-600 text-white font-semibold hover:opacity-90 transition">
+        Pay ₦<%= amount == 400000 ? "4,000" : "7,500" %> Now
+      </button>
+      
+      <p class="text-xs text-gray-500 mt-6">
+        Secure payment powered by Paystack. You'll be redirected to complete your payment.
+      </p>
+    </div>
+  </div>
+
+  <script>
+    const payBtn = document.getElementById('pay-now');
+    
+    payBtn.addEventListener('click', async () => {
+      payBtn.disabled = true;
+      payBtn.textContent = 'Processing...';
+      
+      try {
+        const response = await fetch('/paystack/initialize', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            plan: '<%= plan_name %>'
+          })
+        });
+        
+        const result = await response.json();
+        
+        if (result.status && result.authorization_url) {
+          window.location.href = result.authorization_url;
+        } else {
+          alert('Error: ' + (result.message || 'Unable to initialize payment'));
+          payBtn.disabled = false;
+          payBtn.textContent = 'Pay ₦<%= amount == 400000 ? "4,000" : "7,500" %> Now';
+        }
+      } catch (error) {
+        console.error('Error:', error);
+        alert('An error occurred. Please try again.');
+        payBtn.disabled = false;
+        payBtn.textContent = 'Pay ₦<%= amount == 400000 ? "4,000" : "7,500" %> Now';
+      }
+    });
+  </script>
+</body>
+</html>

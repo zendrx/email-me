@@ -1,0 +1,24 @@
+name: email-me
+version: 0.1.0
+authors:
+  - zendrx <you@emailme.com>
+
+targets:
+  email-me:
+    main: server.cr
+
+dependencies:
+  kemal:
+    github: kemalcr/kemal
+  sqlite3:
+    github: crystal-lang/crystal-sqlite3
+  jwt:
+    github: crystal-community/jwt
+
+development_dependencies:
+  ameba:
+    github: crystal-ameba/ameba
+
+crystal: ">= 1.0.0"
+
+license: MIT

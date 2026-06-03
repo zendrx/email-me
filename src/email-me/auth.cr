@@ -1,5 +1,5 @@
 require "jwt"
-require "bcrypt"
+require "crypto/bcrypt/password"
 require "json"
 require "./db"
 
@@ -20,62 +20,58 @@ class Auth
     end
   end
 
-  def self.register(email : String, username : String, password : String) : Tuple(Bool, String | Int32)
+  def self.register(email : String, username : String, password : String) : Tuple(Bool, String | Int64)
     # Validate inputs
     return {false, "Email is required"} if email.empty?
     return {false, "Username is required"} if username.empty?
     return {false, "Password is required"} if password.empty?
     return {false, "Password must be at least 8 characters"} if password.size < 8
-    return {false, "Invalid email format"} unless email.match?(/^[^\s@]+@[^\s@]+\.[^\s@]+$/)
-    return {false, "Username must be letters, numbers, underscore only"} unless username.match?(/^[a-zA-Z0-9_]{3,30}$/)
     
     # Check if user exists
-    if DB.email_exists?(email)
+    if DAB.email_exists?(email)
       return {false, "Email already registered"}
     end
     
-    if DB.username_exists?(username)
+    if DAB.username_exists?(username)
       return {false, "Username already taken"}
     end
     
     # Hash password and create user
-    password_hash = BCrypt::Password.create(password)
-    user_id = DB.create_user(email, username, password_hash)
+    password_hash = Crypto::Bcrypt::Password.create(password, cost: 10).to_s
+    user_id = DAB.create_user(email, username, password_hash)
     
     return {true, user_id}
   end
 
   def self.login(email_or_username : String, password : String) : Tuple(Bool, String | String)
     # Find user by email or username
-    user = DB.find_user(email_or_username)
+    user = DAB.find_user(email_or_username)
     
     if user.nil?
       return {false, "Invalid email/username or password"}
     end
     
     # Verify password
-    stored_hash = BCrypt::Password.new(user[:password_hash])
-    unless stored_hash == password
+    stored_hash = Crypto::Bcrypt::Password.create(user[:password_hash], cost: 10)
+    if stored_hash.verify(password)
+      # Generate JWT
+      payload = UserPayload.new(
+        id: user[:id],
+        email: user[:email],
+        username: user[:username]
+      )
+      token = JWT.encode(payload.to_json, JWT_SECRET, JWT::Algorithm::HS256)
+      return {true, token}
+    else
       return {false, "Invalid email/username or password"}
     end
-    
-    # Generate JWT
-    payload = UserPayload.new(
-      id: user[:id],
-      email: user[:email],
-      username: user[:username]
-    )
-    
-    token = JWT.encode(payload.to_json, JWT_SECRET, JWT::Algorithm::HS256)
-    
-    return {true, token}
   end
 
   def self.authenticate(token : String?) : UserPayload?
     return nil if token.nil?
     
     begin
-      decoded = JWT.decode(token, JWT_SECRET, [JWT::Algorithm::HS256])
+      decoded = JWT.decode(token, JWT_SECRET, JWT::Algorithm::HS256)
       payload_data = JSON.parse(decoded[0].to_s)
       
       # Check expiration

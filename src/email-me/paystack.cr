@@ -12,69 +12,93 @@ module Paystack
   UNLIMITED_AMOUNT = 750_000
   
   struct InitializeResponse
-    JSON.mapping(
-      status: Bool,
-      message: String,
-      data: InitializeData?
-    )
+    include JSON::Serializable
+
+    property status : Bool
+    property message : String
+    property data : InitializeData?
+
+    def initialize(@status : Bool, @message : String, @data : InitializeData?)
+    end
   end
   
   struct InitializeData
-    JSON.mapping(
-      authorization_url: String,
-      access_code: String,
-      reference: String
-    )
+    include JSON::Serializable
+
+    property authorization_url : String
+    property access_code : String
+    property reference : String
+
+    def initialize(@authorization_url : String, @access_code : String, @reference : String)
+    end
   end
   
   struct VerifyResponse
-    JSON.mapping(
-      status: Bool,
-      message: String,
-      data: VerifyData?
-    )
+    include JSON::Serializable
+
+    property status : Bool
+    property message : String
+    property data : VerifyData?
+
+    def initialize(@status : Bool, @message : String, @data : VerifyData?)
+    end
   end
   
   struct VerifyData
-    JSON.mapping(
-      amount: Int32,
-      currency: String,
-      status: String,
-      reference: String,
-      metadata: Metadata?
-    )
+    include JSON::Serializable
+
+    property amount : Int32
+    property currency : String
+    property status : String
+    property reference : String
+    property metadata : Metadata?
+
+    def initialize(@amount : Int32, @currency : String, @status : String, @reference : String, @metadata : Metadata?)
+    end
   end
   
   struct Metadata
-    JSON.mapping(
-      user_id: Int32,
-      plan: String
-    )
+    include JSON::Serializable
+
+    property user_id : Int32
+    property plan : String
+
+    def initialize(@user_id : Int32, @plan : String)
+    end
   end
   
   struct WebhookEvent
-    JSON.mapping(
-      event: String,
-      data: WebhookData
-    )
+    include JSON::Serializable
+
+    property event : String
+    property data : WebhookData
+
+    def initialize(@event : String, @data : WebhookData)
+    end
   end
   
   struct WebhookData
-    JSON.mapping(
-      reference: String,
-      amount: Int32,
-      status: String,
-      customer: WebhookCustomer,
-      metadata: Metadata?
-    )
+    include JSON::Serializable
+
+    property reference : String
+    property amount : Int32
+    property status : String
+    property customer : WebhookCustomer
+    property metadata : Metadata?
+
+    def initialize(@reference : String, @amount : Int32, @status : String, @customer : WebhookCustomer, @metadata : Metadata?)
+    end
   end
   
   struct WebhookCustomer
-    JSON.mapping(
-      email: String,
-      first_name: String?,
-      last_name: String?
-    )
+    include JSON::Serializable
+
+    property email : String
+    property first_name : String?
+    property last_name : String?
+
+    def initialize(@email : String, @first_name : String?, @last_name : String?)
+    end
   end
   
   # Initialize a transaction

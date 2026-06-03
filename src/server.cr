@@ -4,13 +4,9 @@ require "json"
 require "uuid"
 require "db"
 require "sqlite3"
-require "bcrypt"
+require "crypto/bcrypt/password"
 require "jwt"
 require "./email-me/*"
-# Database setup
-DB::DATABASE = SQLite3::DB.open(ENV["DATABASE_URL"]? || "email_me.db")
-DB.setup
-
 # Helper to get current user
 def current_user(env)
   token = env.request.cookies["auth_token"]?.try(&.value)
@@ -29,10 +25,12 @@ end
 
 # Helper to get user object with plan
 def get_user_with_plan(user_id : Int32)
-  result = DB::DATABASE.query_one?("SELECT id, email, username, plan, forward_email FROM users WHERE id = $1", user_id, as: {Int32, String, String, String?, String?})
-  return nil if result.nil?
-  id, email, username, plan, forward_email = result
-  {id: id, email: email, username: username, plan: plan || "Free", forward_email: forward_email}
+  DB.open(DAB::DB_PATH) do |db|
+    result = db.query_one?("SELECT id, email, username, plan, forward_email FROM users WHERE id = ?", user_id, as: {Int32, String, String, String?, String?})
+    return nil if result.nil?
+    id, email, username, plan, forward_email = result
+    {id: id, email: email, username: username, plan: plan || "Free", forward_email: forward_email}
+  end
 end
 
 # Routes
@@ -76,7 +74,7 @@ post "/login" do |env|
   
   if success
     token = result.as(String)
-    env.response.cookies["auth_token"] = HTTP::Cookie.new("auth_token", token, path: "/", httponly: true, max_age: 7.days)
+    env.response.cookies["auth_token"] = HTTP::Cookie.new("auth_token", token, path: "/", http_only: true, max_age: 7.days)
     env.redirect "/dashboard"
   else
     error = result.as(String)
@@ -109,7 +107,7 @@ post "/signup" do |env|
     signup_success = ""
     signup_email = email
     signup_username = username
-    return ECR.render("views/signup.ecr")
+    next ECR.render("views/signup.ecr")
   end
   
   success, result = Auth.register(email, username, password)
@@ -147,7 +145,7 @@ end
 # Dashboard
 get "/dashboard" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   user_data = get_user_with_plan(user.id).not_nil!
   aliases = Alias.find_by_user(user.id)
@@ -166,7 +164,7 @@ end
 # Alias management page
 get "/alias" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   user_data = get_user_with_plan(user.id).not_nil!
   aliases = Alias.find_by_user(user.id)
@@ -183,7 +181,7 @@ end
 # Create alias
 post "/alias/create" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   params = env.params.body
   local_part = params["local_part"]?.to_s
@@ -206,7 +204,7 @@ post "/alias/create" do |env|
         plan = user_data[:plan]
         domain = Alias::DEFAULT_DOMAIN
         success_message = ""
-        return ECR.render("views/alias.ecr")
+        next ECR.render("views/alias.ecr")
       end
     end
     env.redirect "/alias"
@@ -225,7 +223,7 @@ end
 # Delete alias
 post "/alias/delete" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   params = env.params.body
   alias_id = params["alias_id"]?.to_s.to_i
@@ -242,7 +240,7 @@ end
 # Team management page
 get "/team" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   user_data = get_user_with_plan(user.id).not_nil!
   plan = user_data[:plan]
@@ -263,7 +261,7 @@ end
 # Add custom domain
 post "/team/domain/add" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   params = env.params.body
   domain = params["domain"]?.to_s
@@ -291,7 +289,7 @@ end
 # Invite team member
 post "/team/invite" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   params = env.params.body
   domain_id = params["domain_id"]?.to_s.to_i
@@ -321,7 +319,7 @@ end
 # Remove team member
 post "/team/remove" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   params = env.params.body
   domain_id = params["domain_id"]?.to_s.to_i
@@ -334,7 +332,7 @@ end
 # Pro checkout page
 get "/pro" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   response = env.response
   response.content_type = "text/html"
@@ -347,7 +345,7 @@ end
 # Unlimited checkout page
 get "/unlimited" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   response = env.response
   response.content_type = "text/html"
@@ -360,7 +358,7 @@ end
 # Initialize Paystack payment
 post "/paystack/initialize" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   params = env.params.body
   plan = params["plan"]?.to_s
@@ -387,13 +385,13 @@ end
 # Paystack callback
 get "/paystack/callback" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
   reference = env.params.query["reference"]?.to_s
   
   if reference.empty?
     env.redirect "/pricing?error=missing_reference"
-    return
+    next
   end
   
   result = Paystack.verify_transaction(reference)
@@ -402,10 +400,12 @@ get "/paystack/callback" do |env|
     metadata = result.data.not_nil!.metadata
     plan = metadata ? metadata.plan : "Pro"
     
-    DB::DATABASE.exec(
-      "UPDATE users SET plan = $1 WHERE id = $2",
-      plan, user.id
-    )
+    DB.open(DAB::DB_PATH) do |db|
+      db.exec(
+        "UPDATE users SET plan = ? WHERE id = ?",
+        plan, user.id
+      )
+    end
     
     response = env.response
     response.content_type = "text/html"
@@ -434,18 +434,22 @@ post "/paystack/webhook" do |env|
         user_id = metadata.user_id
         plan = metadata.plan
         
-        DB::DATABASE.exec(
-          "UPDATE users SET plan = $1 WHERE id = $2",
-          plan, user_id
-        )
+        DB.open(DAB::DB_PATH) do |db|
+          db.exec(
+            "UPDATE users SET plan = ? WHERE id = ?",
+            plan, user_id
+          )
+        end
       end
     when "subscription.disable"
       # Handle subscription cancellation
       reference = event.data.reference
-      DB::DATABASE.exec(
-        "UPDATE users SET plan = 'Free' WHERE stripe_customer_id IS NULL AND id IN (SELECT user_id FROM users WHERE email = $1)",
-        event.data.customer.email
-      )
+      DB.open(DAB::DB_PATH) do |db|
+        db.exec(
+          "UPDATE users SET plan = 'Free' WHERE stripe_customer_id IS NULL AND id IN (SELECT user_id FROM users WHERE email = ?)",
+          event.data.customer.email
+        )
+      end
     end
     
     env.response.status_code = 200
@@ -459,12 +463,14 @@ end
 # Cancel subscription (redirect to team page for now)
 post "/cancel-subscription" do |env|
   user = require_login(env)
-  return unless user
+  next unless user
   
-  DB::DATABASE.exec(
-    "UPDATE users SET plan = 'Free' WHERE id = $1",
-    user.id
-  )
+  DB.open(DAB::DB_PATH) do |db|
+    db.exec(
+      "UPDATE users SET plan = 'Free' WHERE id = ?",
+      user.id
+    )
+  end
   
   env.redirect "/dashboard"
 end

@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings - Email Me</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .gradient-bg {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    }
+  </style>
+</head>
+<body class="bg-gray-50">
+  <nav class="bg-white shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex justify-between items-center h-16">
+        <div class="flex items-center">
+          <a href="/dashboard" class="text-xl font-bold gradient-bg bg-clip-text text-transparent bg-gradient-to-r from-purple-600 to-blue-600">
+            Email Me
+          </a>
+        </div>
+        <div class="flex space-x-4">
+          <a href="/dashboard" class="text-gray-700 hover:text-gray-900">Dashboard</a>
+          <a href="/alias" class="text-gray-700 hover:text-gray-900">Aliases</a>
+          <a href="/team" class="text-gray-700 hover:text-gray-900">Team</a>
+          <a href="/pricing" class="text-gray-700 hover:text-gray-900">Pricing</a>
+          <a href="/logout" class="px-4 py-2 rounded-lg border border-red-600 text-red-600 hover:bg-red-50 transition">
+            Logout
+          </a>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <div class="max-w-4xl mx-auto px-4 py-10">
+    <h1 class="text-2xl font-bold text-gray-900 mb-8">Settings</h1>
+    
+    <% if success_message %>
+      <div class="mb-4 p-3 rounded-lg bg-green-100 border border-green-400 text-green-700">
+        <%= success_message %>
+      </div>
+    <% end %>
+    
+    <% if error_message %>
+      <div class="mb-4 p-3 rounded-lg bg-red-100 border border-red-400 text-red-700">
+        <%= error_message %>
+      </div>
+    <% end %>
+    
+    <!-- Forward Email Settings -->
+    <div class="bg-white rounded-lg shadow-sm p-6 mb-8">
+      <h2 class="text-lg font-semibold text-gray-900 mb-4">Forwarding Email</h2>
+      <p class="text-sm text-gray-500 mb-4">All emails sent to your aliases will be forwarded to this address.</p>
+      
+      <form action="/settings/forward" method="POST">
+        <div class="flex gap-4">
+          <input type="email" 
+                 name="forward_email" 
+                 value="<%= current_forward_email %>"
+                 required
+                 class="flex-1 rounded-lg border border-gray-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-purple-600"
+                 placeholder="your-email@gmail.com">
+          <button type="submit" 
+                  class="px-6 py-2 rounded-lg bg-gradient-to-r from-purple-600 to-blue-600 text-white font-semibold hover:opacity-90 transition">
+            Update
+          </button>
+        </div>
+      </form>
+    </div>
+    
+    <!-- Subscription Settings -->
+    <div class="bg-white rounded-lg shadow-sm p-6">
+      <h2 class="text-lg font-semibold text-gray-900 mb-4">Subscription</h2>
+      
+      <div class="flex justify-between items-center py-3 border-b border-gray-200">
+        <div>
+          <p class="font-medium">Current Plan</p>
+          <p class="text-sm text-gray-500"><%= current_plan %></p>
+        </div>
+        <% if current_plan == "Free" %>
+          <a href="/pricing" class="px-4 py-2 rounded-lg bg-purple-600 text-white text-sm hover:bg-purple-700 transition">
+            Upgrade
+          </a>
+        <% else %>
+          <form action="/cancel-subscription" method="POST" onsubmit="return confirm('Are you sure you want to cancel your subscription? You will lose access to premium features.');">
+            <button type="submit" class="px-4 py-2 rounded-lg border border-red-600 text-red-600 text-sm hover:bg-red-50 transition">
+              Cancel Subscription
+            </button>
+          </form>
+        <% end %>
+      </div>
+      
+      <% if current_plan != "Free" %>
+        <div class="mt-4 p-3 bg-gray-50 rounded-lg">
+          <p class="text-xs text-gray-500">
+            Your subscription renews automatically each month. You can cancel anytime.
+          </p>
+        </div>
+      <% end %>
+    </div>
+    
+    <!-- Danger Zone (optional) -->
+    <div class="bg-red-50 border border-red-200 rounded-lg p-6 mt-8">
+      <h2 class="text-lg font-semibold text-red-800 mb-2">Danger Zone</h2>
+      <p class="text-sm text-red-600 mb-4">Permanently delete your account and all aliases.</p>
+      
+      <form action="/account/delete" method="POST" onsubmit="return confirm('WARNING: This will delete ALL your aliases and cannot be undone. Are you absolutely sure?');">
+        <button type="submit" class="px-4 py-2 rounded-lg bg-red-600 text-white text-sm hover:bg-red-700 transition">
+          Delete Account
+        </button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

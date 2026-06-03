@@ -7,6 +7,8 @@ module Cloudflare
   API_TOKEN = ENV["CF_API_TOKEN"]? || raise "CF_API_TOKEN environment variable not set"
 
   struct EmailRule
+    include JSON::Serializable
+
     property id : String
     property enabled : Bool
     property matchers : Array(Matcher)
@@ -17,6 +19,8 @@ module Cloudflare
   end
 
   struct Matcher
+    include JSON::Serializable
+
     property field : String
     property value : String
     property type : String
@@ -26,6 +30,8 @@ module Cloudflare
   end
 
   struct Action
+    include JSON::Serializable
+
     property type : String
     property value : Array(String)
     
@@ -81,6 +87,7 @@ module Cloudflare
   end
 
   def self.get_rules : Array(EmailRule)
+    rules = [] of EmailRule
     response = HTTP::Client.get(
       "#{API_BASE}/zones/#{ZONE_ID}/email/routing/rules",
       headers: HTTP::Headers{
@@ -89,8 +96,6 @@ module Cloudflare
       }
     )
 
-    rules = [] of EmailRule
-    
     if response.status_code == 200
       data = JSON.parse(response.body)
       if data["success"] == true
@@ -106,7 +111,7 @@ module Cloudflare
     
     rules
   rescue
-    rules
+    [] of EmailRule
   end
 
   def self.rule_exists_for_email(email_address : String) : Bool
