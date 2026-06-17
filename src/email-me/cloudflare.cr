@@ -13,7 +13,7 @@ module Cloudflare
     property enabled : Bool
     property matchers : Array(Matcher)
     property actions : Array(Action)
-    
+
     def initialize(@id = "", @enabled = true, @matchers = [] of Matcher, @actions = [] of Action)
     end
   end
@@ -24,7 +24,7 @@ module Cloudflare
     property field : String
     property value : String
     property type : String
-    
+
     def initialize(@field : String, @value : String, @type : String = "literal")
     end
   end
@@ -34,7 +34,7 @@ module Cloudflare
 
     property type : String
     property value : Array(String)
-    
+
     def initialize(@type : String, @value : Array(String))
     end
   end
@@ -48,8 +48,8 @@ module Cloudflare
     response = HTTP::Client.post(
       "#{API_BASE}/zones/#{ZONE_ID}/email/routing/rules",
       headers: HTTP::Headers{
-        "Authorization" => ["Bearer #{API_TOKEN}"],
-        "Content-Type" => ["application/json"]
+        "Authorization" => "Bearer #{API_TOKEN}",
+        "Content-Type" => "application/json"
       },
       body: rule.to_json
     )
@@ -61,7 +61,7 @@ module Cloudflare
         return {true, rule_id}
       end
     end
-    
+
     {false, response.body}
   rescue ex
     {false, ex.message.to_s}
@@ -71,8 +71,8 @@ module Cloudflare
     response = HTTP::Client.delete(
       "#{API_BASE}/zones/#{ZONE_ID}/email/routing/rules/#{rule_id}",
       headers: HTTP::Headers{
-        "Authorization" => ["Bearer #{API_TOKEN}"],
-        "Content-Type" => ["application/json"]
+        "Authorization" => "Bearer #{API_TOKEN}",
+        "Content-Type" => "application/json"
       }
     )
 
@@ -80,7 +80,7 @@ module Cloudflare
       data = JSON.parse(response.body)
       return data["success"] == true
     end
-    
+
     false
   rescue
     false
@@ -91,8 +91,8 @@ module Cloudflare
     response = HTTP::Client.get(
       "#{API_BASE}/zones/#{ZONE_ID}/email/routing/rules",
       headers: HTTP::Headers{
-        "Authorization" => ["Bearer #{API_TOKEN}"],
-        "Content-Type" => ["application/json"]
+        "Authorization" => "Bearer #{API_TOKEN}",
+        "Content-Type" => "application/json"
       }
     )
 
@@ -108,7 +108,7 @@ module Cloudflare
         end
       end
     end
-    
+
     rules
   rescue
     [] of EmailRule
@@ -118,8 +118,8 @@ module Cloudflare
     response = HTTP::Client.get(
       "#{API_BASE}/zones/#{ZONE_ID}/email/routing/rules",
       headers: HTTP::Headers{
-        "Authorization" => ["Bearer #{API_TOKEN}"],
-        "Content-Type" => ["application/json"]
+        "Authorization" => "Bearer #{API_TOKEN}",
+        "Content-Type" => "application/json"
       }
     )
 
@@ -136,7 +136,7 @@ module Cloudflare
         end
       end
     end
-    
+
     false
   rescue
     false
@@ -145,7 +145,7 @@ module Cloudflare
   def self.sync_alias(alias_obj : Alias, action : String) : Tuple(Bool, String)
     email = alias_obj.full_email
     forward_to = alias_obj.forward_to
-    
+
     case action
     when "create"
       # Check if rule already exists
@@ -153,7 +153,7 @@ module Cloudflare
         return {false, "Rule already exists for #{email}"}
       end
       create_forward(email, forward_to)
-      
+
     when "delete"
       # Need to find rule ID for this email first
       rules = get_rules
@@ -161,9 +161,9 @@ module Cloudflare
         # Check if this rule matches our email
         response = HTTP::Client.get(
           "#{API_BASE}/zones/#{ZONE_ID}/email/routing/rules/#{rule.id}",
-          headers: HTTP::Headers{"Authorization" => ["Bearer #{API_TOKEN}"]}
+          headers: HTTP::Headers{"Authorization" => "Bearer #{API_TOKEN}"}
         )
-        
+
         if response.status_code == 200
           data = JSON.parse(response.body)
           if data["success"] == true
@@ -177,7 +177,7 @@ module Cloudflare
         end
       end
       {false, "Rule not found for #{email}"}
-      
+
     else
       {false, "Unknown action"}
     end
